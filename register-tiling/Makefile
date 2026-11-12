@@ -1,16 +1,23 @@
 CC     = nvcc
+# sm_86 = RTX A2000 (Ampere GA106); -lineinfo lets ncu map metrics to source lines
+FLAGS  = -O3 -arch=sm_86 -lineinfo
 TARGET = scan
 SRC    = main.cu
+DEPS   = ../bench.cuh
+N     ?= 2^24
 
 .PHONY: all run clean
 
 all: $(TARGET)
 
-$(TARGET): $(SRC)
-	$(CC) $(SRC) -o $(TARGET)
+# bench.cuh is a dependency so editing it triggers a rebuild
+$(TARGET): $(SRC) $(DEPS)
+	$(CC) $(FLAGS) $(SRC) -o $(TARGET)
 
+# make run            -> N = 2^24
+# make run N=2^20     -> any size
 run: $(TARGET)
-	./$(TARGET)
+	./$(TARGET) $(N)
 
 clean:
 	rm -f $(TARGET) a.out

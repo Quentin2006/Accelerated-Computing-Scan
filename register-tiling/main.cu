@@ -3,7 +3,7 @@
 #include <cuda.h>
 #include <stdio.h>
 #include <stdlib.h>
-
+#include "../bench.cuh"
 //#define SEG_SIZE 256
 #define BLOCK_DIM 256
 #define COARSE_FACTOR 8
@@ -128,33 +128,43 @@ __global__ void scan(float *dst, const float *src, unsigned int N,
 	}
 }
 
-int main(void) {
+int main(int argc, char** argv) {
   float *src, *dst;
-  int numElements = 10;
-  int numBytes = sizeof(float) * numElements;
+  size_t numElements = bench::arg_n(argc, argv, 1 << 24); //Num elements now taken as arg
+  size_t numBytes = sizeof(float) * numElements;
 
   src = (float *)malloc(numBytes);
   dst = (float *)malloc(numBytes);
 
-  for (int i = 0; i < numElements; ++i)
+  for (size_t i = 0; i < numElements; ++i)
     src[i] = 1.0f;
 
+	bench::print_device();//added from bench.cuh
   // calling cuda ker
   {
     float *src_d, *dst_d;
     int threads = BLOCK_DIM;//was SEG_SIZE
-    int gd = ceil(numElements / (float)threads);
+	const size_t perBlock = COARSE_FACTOR * BLOCK_DIM;
+    int gd = (int)((numElements + perBlock - 1)/perBlock);
 
-    cudaMalloc(&src_d, numBytes);
-    cudaMalloc(&dst_d, numBytes);
+    CUDA_CHECK(cudaMalloc(&src_d, numBytes));
+    CUDA_CHECK(cudaMalloc(&dst_d, numBytes));
 
-    cudaMemcpy(src_d, src, numBytes, cudaMemcpyHostToDevice);
-    scan<<<gd, threads>>>(dst_d, src_d, numElements, ADD);
-    cudaMemcpy(dst, dst_d, numBytes, cudaMemcpyDeviceToHost);
+    CUDA_CHECK(cudaMemcpy(src_d, src, numBytes, cudaMemcpyHostToDevice));
+	bench::Stats s = bench::time_gpu([&]{
+		scan<<<gd, threads>>>(dst_d, src_d, numElements, ADD);
+	});
+    bench::report("register-tiling", numElements, s,
+	bench::scan_min_bytes(numElements),
+	bench::scan_min_flops(numElements));
+
+    CUDA_CHECK(cudaMemcpy(dst, dst_d, numBytes, cudaMemcpyDeviceToHost));
+	cudaFree(src_d);
+	cudaFree(dst_d);
   }
 
-  for (int i = 0; i < numElements; ++i)
-    printf("dst[%i] == %f\n", i, dst[i]);
+  for (size_t i = 0; i < 4 && i < numElements; ++i)
+    printf("dst[%zu] == %f\n", i, dst[i]);
 
   free(src);
   free(dst);
