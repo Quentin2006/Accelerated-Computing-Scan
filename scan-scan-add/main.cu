@@ -2,6 +2,7 @@
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "../bench.cuh" // BENCH: timing/reporting header (bench::, CUDA_CHECK)
 
 #define SEG_SIZE 256
 #define WARP_SIZE 32
@@ -104,24 +105,29 @@ __global__ void addBlockOffsets(float *dst, const float *blockTotals,
   }
 }
 
-int main(void) {
+int main(int argc, char **argv) { // BENCH: was main(void); argv carries N
   float *src, *dst;
-  int numElements = 10;
+  // BENCH: N from the command line (./scan 2^24) instead of hardcoded 10
+  size_t numElements = bench::arg_n(argc, argv, 1 << 24);
 
-  // numBytes is an int so a bad count would wrap around
-  if (numElements <= 0 || numElements > INT_MAX / (int)sizeof(float)) {
-    fprintf(stderr, "bad element count %d: must be between 1 and %d\n",
-            numElements, INT_MAX / (int)sizeof(float));
+  // BENCH: was an INT_MAX check on an int byte count. Bytes are size_t now, so
+  // the real limit is the kernels' unsigned int N parameter. arg_n already
+  // rejects 0 and non-numbers.
+  if (numElements > UINT_MAX) {
+    fprintf(stderr, "bad element count %zu: must be at most %u\n",
+            numElements, UINT_MAX);
     return EXIT_FAILURE;
   }
 
-  int numBytes = sizeof(float) * numElements;
+  size_t numBytes = sizeof(float) * numElements; // BENCH: size_t, was int
 
   src = (float *)malloc(numBytes);
   dst = (float *)malloc(numBytes);
 
-  for (int i = 0; i < numElements; ++i)
+  for (size_t i = 0; i < numElements; ++i) // BENCH: size_t to match N
     src[i] = 1.0f;
+
+  bench::print_device(); // BENCH: one-line GPU summary (peaks, ridge point)
 
   // calling cuda kernels
   {
@@ -136,30 +142,47 @@ int main(void) {
       return EXIT_FAILURE;
     }
 
-    int gd = (numElements + threads - 1) / threads;
+    // BENCH: cast added, numElements is size_t now
+    int gd = (int)((numElements + threads - 1) / threads);
     if (gd < 1)
       gd = 1;
-    int totalsBytes = sizeof(float) * gd;
+    size_t totalsBytes = sizeof(float) * gd; // BENCH: size_t, was int
 
-    cudaMalloc(&src_d, numBytes);
-    cudaMalloc(&dst_d, numBytes);
-    cudaMalloc(&blockTotals_d, totalsBytes);
+    // BENCH: CUDA_CHECK (from bench.cuh) aborts with file/line on any error
+    CUDA_CHECK(cudaMalloc(&src_d, numBytes));
+    CUDA_CHECK(cudaMalloc(&dst_d, numBytes));
+    CUDA_CHECK(cudaMalloc(&blockTotals_d, totalsBytes));
 
-    cudaMemcpy(src_d, src, numBytes, cudaMemcpyHostToDevice);
-    scanBlock<<<gd, threads>>>(dst_d, blockTotals_d, src_d, numElements);
-    // step 2 runs on one block and walks the totals in chunks so gd can be
-    // any size
-    scanBlockTotals<<<1, threads>>>(blockTotals_d, gd);
-    addBlockOffsets<<<gd, threads>>>(dst_d, blockTotals_d, numElements);
-    cudaMemcpy(dst, dst_d, numBytes, cudaMemcpyDeviceToHost);
+    CUDA_CHECK(cudaMemcpy(src_d, src, numBytes, cudaMemcpyHostToDevice));
+
+    // BENCH: all three kernels run inside one timed lambda, so the time covers
+    // the whole scan (3 warmup + 20 timed runs, L2 cleared before each).
+    // Each run rewrites dst_d and blockTotals_d from scratch, so repeating
+    // it is safe.
+    bench::Stats s = bench::time_gpu([&] {
+      scanBlock<<<gd, threads>>>(dst_d, blockTotals_d, src_d, numElements);
+      // step 2 runs on one block and walks the totals in chunks so gd can be
+      // any size
+      scanBlockTotals<<<1, threads>>>(blockTotals_d, gd);
+      addBlockOffsets<<<gd, threads>>>(dst_d, blockTotals_d, numElements);
+    });
+    // BENCH: minimum scan work (8N bytes, N-1 ops). Actual traffic is ~16N
+    // bytes (step 3 reads and writes dst again); actual ops are ~6.4N
+    // (shuffle block scan ~5.4N + the add-back N).
+    bench::report("scan-scan-add", numElements, s,
+                  bench::scan_min_bytes(numElements),
+                  bench::scan_min_flops(numElements));
+
+    CUDA_CHECK(cudaMemcpy(dst, dst_d, numBytes, cudaMemcpyDeviceToHost));
 
     cudaFree(src_d);
     cudaFree(dst_d);
     cudaFree(blockTotals_d);
   }
 
-  for (int i = 0; i < numElements; ++i)
-    printf("dst[%i] == %f\n", i, dst[i]);
+  // BENCH: spot-check the first few values instead of printing all N
+  for (size_t i = 0; i < 4 && i < numElements; ++i)
+    printf("dst[%zu] == %f\n", i, dst[i]);
 
   free(src);
   free(dst);
