@@ -4,7 +4,7 @@
 //   Args a = parse_args(argc, argv, 1 << 24);   // default N when none given
 //   fill_input(src, a.n, a.input);              // repeat the --input pattern
 //   ...  scan<<<...>>>(dst_d, src_d, a.n, a.op);
-//   write_output(dst, a.n);                     // one CSV line on stdout
+//   write_output(dst, a.n);                     // one line of values on stdout
 //
 // Command line (parsed with getopt_long, so N and the flags can come in any
 // order):
@@ -12,10 +12,11 @@
 //   N is a plain count (16777216) or a power of two (2^24).
 //   --op defaults to add, --input defaults to 1 (so add gives 1,2,3,...).
 //
-// Output:
-//   stdout gets exactly one line: all N scan results, comma separated, "%.9g"
-//   (enough digits to round-trip a float). The [bench] lines go to stderr, so
-//   `./scan.out 2^20 > out.txt` captures only the values.
+// Output (all on stdout, in this order):
+//   [bench] GPU specs line
+//   [bench] timing line
+//   one line with all N scan results, comma separated, "%.9g" (enough digits
+//   to round-trip a float). It is always the last line.
 
 #pragma once
 
@@ -184,13 +185,23 @@ inline void fill_input(float *dst, size_t n,
     dst[i] = pattern[i % k];
 }
 
-// All n values on one stdout line. A big buffer keeps 2^28 values from turning
-// into millions of small writes.
+// All n values on one stdout line. Values are formatted into a 16 MB buffer
+// that is written with one fwrite each time it fills, so 2^28 values don't
+// turn into millions of small writes.
 inline void write_output(const float *dst, size_t n) {
   static char buf[1 << 24];
-  std::setvbuf(stdout, buf, _IOFBF, sizeof(buf));
-  for (size_t i = 0; i < n; ++i)
-    std::printf(i ? ",%.9g" : "%.9g", (double)dst[i]);
-  std::putchar('\n');
+  const size_t room = 32; // longest "%.9g" value plus a comma, rounded up
+  size_t len = 0;
+  std::fflush(stdout); // keep the [bench] lines ahead of the values
+  for (size_t i = 0; i < n; ++i) {
+    if (len + room > sizeof(buf)) {
+      std::fwrite(buf, 1, len, stdout);
+      len = 0;
+    }
+    len += (size_t)std::snprintf(buf + len, room, i ? ",%.9g" : "%.9g",
+                                 (double)dst[i]);
+  }
+  buf[len++] = '\n';
+  std::fwrite(buf, 1, len, stdout);
   std::fflush(stdout);
 }
