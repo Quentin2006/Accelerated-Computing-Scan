@@ -1,6 +1,6 @@
 CC     = gcc
 CFLAGS = -Wall -Wextra -O2
-TARGET = scan
+TARGET = scan.out
 SRC    = main.c
 
 .PHONY: all run clean
@@ -14,4 +14,4 @@ run: $(TARGET)
 	./$(TARGET)
 
 clean:
-	rm -f $(TARGET) a.out
+	rm -f *.out

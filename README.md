@@ -18,7 +18,7 @@ cd kogge-stone
 make                  # nvcc -O3 -arch=sm_86 (RTX A2000)
 make run              # N = 2^24 (2^16 for naive)
 make run N=2^20       # any size
-./scan 16777216       # same as ./scan 2^24
+./scan.out 16777216   # same as ./scan.out 2^24
 ```
 
 Each run prints the GPU's specs and one timing line. Example output (exact numbers vary):
@@ -32,7 +32,7 @@ To sweep one kernel over many sizes into a CSV file:
 
 ```bash
 cd kogge-stone && make
-for k in $(seq 11 28); do BENCH_CSV=results.csv ./scan 2^$k; done
+for k in $(seq 11 28); do BENCH_CSV=results.csv ./scan.out 2^$k; done
 ```
 
 `BENCH_CSV=<file>` appends one row per run and writes the header row if the file is new.
@@ -48,9 +48,9 @@ for d in naive kogge-stone kogge-stone-double-buffering scan-scan-add register-t
   (cd $d && make -s)
 done
 for d in kogge-stone kogge-stone-double-buffering scan-scan-add register-tiling; do
-  for k in $(seq 11 28); do (cd $d && BENCH_CSV=../results.csv ./scan 2^$k); done
+  for k in $(seq 11 28); do (cd $d && BENCH_CSV=../results.csv ./scan.out 2^$k); done
 done
-for k in $(seq 11 20); do (cd naive && BENCH_CSV=../results.csv ./scan 2^$k); done
+for k in $(seq 11 20); do (cd naive && BENCH_CSV=../results.csv ./scan.out 2^$k); done
 ```
 
 All kernels then share one `results.csv`, with a `kernel` column telling the rows apart.
@@ -73,6 +73,6 @@ All kernels then share one `results.csv`, with a `kernel` column telling the row
   For `scan-scan-add`, that's all three kernels together.
 - **Default work counts:** `bytes` and `flops` are the minimum work for any scan, so GB/s compares kernels fairly.
   Each kernel's actual operation count is in a `// BENCH:` comment next to its `bench::report` call.
-- **Memory check:** run `compute-sanitizer ./scan 2^16` after changing a kernel to catch out-of-bounds accesses.
+- **Memory check:** run `compute-sanitizer ./scan.out 2^16` after changing a kernel to catch out-of-bounds accesses.
 - **Profiling:** `ncu` needs GPU performance-counter permission, which the lab machine currently blocks
-  (`ERR_NVGPUCTRPERM`). `nsys profile --stats=true ./scan 2^24` works without it.
+  (`ERR_NVGPUCTRPERM`). `nsys profile --stats=true ./scan.out 2^24` works without it.
