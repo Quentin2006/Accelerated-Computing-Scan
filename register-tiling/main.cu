@@ -148,7 +148,7 @@ int main(int argc, char** argv) {
     // Traffic is 8N bytes: src read once, dst written once.
     const double blockOps = 7 * BLOCK_DIM + (8 * 129 + 129 + 224) +
                             COARSE_FACTOR * BLOCK_DIM;
-    bench::report("register-tiling", numElements, s,
+    bench::report("register-tiling", op_name(args.op), numElements, s,
 	bench::scan_min_bytes(numElements),
 	bench::scan_min_flops(numElements),
 	8.0 * numElements, blockOps * gd);

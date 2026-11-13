@@ -72,7 +72,7 @@ int main(int argc, char **argv) { // BENCH: was main(void); argv carries N
     // sum over s=1,2,...,128 of (256-s) = 256*8 - 255 = 1793 ops (~7N total).
     // Traffic is 8N bytes: src read once, dst written once.
     const double blockOps = SEG_SIZE * std::log2((double)SEG_SIZE) - (SEG_SIZE - 1);
-    bench::report("kogge-stone", numElements, s,
+    bench::report("kogge-stone", op_name(args.op), numElements, s,
                   bench::scan_min_bytes(numElements),
                   bench::scan_min_flops(numElements),
                   8.0 * numElements, blockOps * gd);

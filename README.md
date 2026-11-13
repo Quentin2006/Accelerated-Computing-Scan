@@ -11,6 +11,7 @@ operators, command-line flags and output code through [`common.cuh`](common.cuh)
 | `kogge-stone-double-buffering/` | Kogge-Stone with two shared buffers | Scans each 256-element block separately |
 | `scan-scan-add/` | Warp-shuffle block scan → scan block totals → add offsets | Full scan of any N |
 | `register-tiling/` | 8 elements per thread in registers + block scan | Scans each 2048-element block separately; N must be a multiple of 2048 (2^11 and up), otherwise it reads and writes out of bounds |
+| `cub/` | `cub::DeviceScan::InclusiveScan` (PMPP 11.11) | Library baseline: the reference output and speed the others are compared against |
 
 ## Benchmark one kernel
 
@@ -75,28 +76,45 @@ for k in $(seq 11 28); do BENCH_CSV=results.csv ./scan.out 2^$k > /dev/null; don
 `BENCH_CSV=<file>` appends one row per run and writes the header row if the file is new.
 Delete the file first to start fresh.
 
-## Sweep all kernels
+## Build, check and benchmark everything
 
-From the repo root:
+[`roofline.py`](roofline.py) does the whole loop from the repo root. It is a
+[uv script](https://docs.astral.sh/uv/guides/scripts/), so uv installs its dependencies on first run.
 
 ```bash
-rm -f results.csv
-for d in naive kogge-stone kogge-stone-double-buffering scan-scan-add register-tiling; do
-  (cd $d && make -s)
-done
-for d in kogge-stone kogge-stone-double-buffering scan-scan-add register-tiling; do
-  for k in $(seq 11 28); do (cd $d && BENCH_CSV=../results.csv ./scan.out 2^$k > /dev/null); done
-done
-for k in $(seq 11 20); do (cd naive && BENCH_CSV=../results.csv ./scan.out 2^$k > /dev/null); done
+uv run roofline.py                        # default: N in range(1, 1100000, 157143)
+uv run roofline.py --range 1 5000 7       # N in range(1, 5000, 7)
+uv run roofline.py --range 2049 2050      # just N = 2049
 ```
 
-All kernels then share one `results.csv`, with a `kernel` column telling the rows apart.
+`--range START STOP [STEP]` takes the same arguments as Python's `range()` and is the only flag.
+For every run the script:
+
+1. runs `make clean` and `make` in every directory (in parallel) and deletes each `<dir>/results.csv`;
+2. for each operator and each N, runs `cub/scan.out`, then every other kernel, with
+   `BENCH_CSV=results.csv`, so each run appends its timing to its own directory's CSV;
+3. compares each kernel's output (the last stdout line) with CUB's, to a relative tolerance of
+   1e-6, and prints `PASS` or `FAIL` per kernel with the first wrong index of up to 5 failures.
+
+Naive stops at N = 2^16. Runs happen one at a time so they don't share the GPU and skew each
+other's timings. The exit status is 1 if any kernel fails.
+
+The inputs keep every result exact in float32: `add` uses `1,2,3`, `max`/`min` use `3,1,4,1,5,9`,
+and `mul` uses `2,-1,0.5`, a pattern whose product over any power-of-two block is −2, so a kernel
+that restarts the scan at a block boundary gets a visibly wrong answer.
+
+To lint and type-check the script:
+
+```bash
+uvx ruff check .
+uvx ty check --python "$(uv python find --script roofline.py)" roofline.py
+```
 
 ## CSV columns
 
 | Column | Meaning |
 |---|---|
-| `kernel`, `device`, `n` | What ran, where, and on how many elements |
+| `kernel`, `op`, `device`, `n` | What ran, with which operator, where, and on how many elements |
 | `median_ms`, `min_ms`, `mean_ms`, `stddev_ms`, `reps` | Kernel time over 20 timed runs (after 3 warm-up runs, with L2 cleared before each) |
 | `bytes`, `flops` | Work credited to the kernel: by default the minimum for any scan, 8N bytes and N−1 ops |
 | `gbs`, `gflops` | `bytes` and `flops` divided by the median time |

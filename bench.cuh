@@ -11,14 +11,14 @@
 //     scan<<<gd, threads>>>(dst_d, src_d, N, ADD);
 //   });
 //   // the last two arguments (the kernel's own estimate) are optional
-//   bench::report("kogge-stone", N, s,
+//   bench::report("kogge-stone", "add", N, s,
 //                 bench::scan_min_bytes(N), bench::scan_min_flops(N),
 //                 est_bytes, est_flops);
 //
 // CPU usage (compiled as C++ with g++/clang++ or nvcc - not as C):
 //
 //   bench::Stats s = bench::time_cpu([&] { scan(dst, src, N, ADD); });
-//   bench::report("seq", N, s,
+//   bench::report("seq", "add", N, s,
 //                 bench::scan_min_bytes(N), bench::scan_min_flops(N));
 //
 // Output:
@@ -332,11 +332,14 @@ inline void print_device(FILE *out = stdout) {
 #endif
 }
 
+// op: the scan operator's name ("add", "mul", ...), recorded so timings for
+//   different operators can be told apart.
 // bytes / flops: the work you want credited for one call of the timed lambda.
 // est_bytes / est_flops: the kernel's own estimate of its traffic and op count
 // (negative = same as bytes / flops).
-inline void report(const char *kernel, size_t n, const Stats &s, double bytes,
-                   double flops, double est_bytes = -1, double est_flops = -1) {
+inline void report(const char *kernel, const char *op, size_t n,
+                   const Stats &s, double bytes, double flops,
+                   double est_bytes = -1, double est_flops = -1) {
   if (est_bytes < 0)
     est_bytes = bytes;
   if (est_flops < 0)
@@ -355,9 +358,9 @@ inline void report(const char *kernel, size_t n, const Stats &s, double bytes,
   FILE *out = stdout;
   std::fprintf(
       out,
-      "[bench] %-24s N=%-11zu median %9.4f ms (min %.4f, sd %.4f, %d reps)"
+      "[bench] %-28s %-3s N=%-11zu median %9.4f ms (min %.4f, sd %.4f, %d reps)"
       "  %8.2f GB/s",
-      kernel, n, s.median_ms, s.min_ms, s.stddev_ms, s.reps, gbs);
+      kernel, op, n, s.median_ms, s.min_ms, s.stddev_ms, s.reps, gbs);
   if (d.peak_gbs > 0)
     std::fprintf(out, " (%5.1f%% peak)", pct_bw);
   std::fprintf(out, "  %8.2f GFLOP/s  AI %.3f FLOP/B", gflops, ai);
@@ -374,14 +377,14 @@ inline void report(const char *kernel, size_t n, const Stats &s, double bytes,
   }
   std::fseek(f, 0, SEEK_END);
   if (std::ftell(f) == 0)
-    std::fprintf(f, "kernel,device,n,median_ms,min_ms,mean_ms,stddev_ms,reps,"
+    std::fprintf(f, "kernel,op,device,n,median_ms,min_ms,mean_ms,stddev_ms,reps,"
                     "bytes,flops,gbs,gflops,ai,pct_peak_bw,pct_peak_flops,"
                     "peak_gbs,peak_gflops,est_bytes,est_flops,est_ai,est_gbs,"
                     "est_gflops\n");
   std::fprintf(f,
-               "%s,\"%s\",%zu,%.6f,%.6f,%.6f,%.6f,%d,%.0f,%.0f,%.4f,%.4f,%.6f,"
+               "%s,%s,\"%s\",%zu,%.6f,%.6f,%.6f,%.6f,%d,%.0f,%.0f,%.4f,%.4f,%.6f,"
                "%.3f,%.3f,%.2f,%.2f,%.0f,%.0f,%.6f,%.4f,%.4f\n",
-               kernel, d.name.c_str(), n, s.median_ms, s.min_ms, s.mean_ms,
+               kernel, op, d.name.c_str(), n, s.median_ms, s.min_ms, s.mean_ms,
                s.stddev_ms, s.reps, bytes, flops, gbs, gflops, ai, pct_bw,
                pct_fl, d.peak_gbs, d.peak_gflops, est_bytes, est_flops, est_ai,
                est_gbs, est_gflops);

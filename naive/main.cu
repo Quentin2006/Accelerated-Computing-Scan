@@ -58,7 +58,7 @@ int main(int argc, char **argv) { // BENCH: was main(void); argv carries N
     // repeats hit L1/L2, so DRAM traffic stays near 8N bytes (read src once,
     // write dst once).
     double n = (double)numElements;
-    bench::report("naive", numElements, s,
+    bench::report("naive", op_name(args.op), numElements, s,
                   bench::scan_min_bytes(numElements),
                   bench::scan_min_flops(numElements),
                   8.0 * n, n * (n - 1.0) / 2.0);

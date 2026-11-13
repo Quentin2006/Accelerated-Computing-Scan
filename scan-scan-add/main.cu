@@ -183,7 +183,7 @@ int main(int argc, char **argv) { // BENCH: was main(void); argv carries N
     double estBytes = 16.0 * n + 16.0 * G;
     double estOps = blockScanOps * G + chunks * (blockScanOps + SEG_SIZE + 1) +
                     (n > SEG_SIZE ? n - SEG_SIZE : 0.0);
-    bench::report("scan-scan-add", numElements, s,
+    bench::report("scan-scan-add", op_name(args.op), numElements, s,
                   bench::scan_min_bytes(numElements),
                   bench::scan_min_flops(numElements), estBytes, estOps);
 

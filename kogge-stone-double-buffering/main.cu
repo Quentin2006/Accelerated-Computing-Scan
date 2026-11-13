@@ -76,7 +76,7 @@ int main(int argc, char **argv) { // BENCH: was main(void); argv carries N
     // Estimate: same ops as kogge-stone, 1793 per 256-element block (~7N);
     // the buffer copies for idle threads aren't ops. Traffic is 8N bytes.
     const double blockOps = SEG_SIZE * std::log2((double)SEG_SIZE) - (SEG_SIZE - 1);
-    bench::report("kogge-stone-double-buffering", numElements, s,
+    bench::report("kogge-stone-double-buffering", op_name(args.op), numElements, s,
                   bench::scan_min_bytes(numElements),
                   bench::scan_min_flops(numElements),
                   8.0 * numElements, blockOps * gd);
