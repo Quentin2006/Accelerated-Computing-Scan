@@ -4,28 +4,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "../bench.cuh"
+#include "../common.cuh" // BINOP, binop, identity, CLI flags, output
 //#define SEG_SIZE 256
 #define BLOCK_DIM 256
 #define COARSE_FACTOR 8
 #define WARP_SIZE 32
 #define NUM_WARPS (BLOCK_DIM/WARP_SIZE)
-
-// NOTE: we can use any bianary operator
-enum BINOP { ADD, SUB, MUL, DIV };
-
-__device__ float binop(float a, float b, enum BINOP op) {
-  switch (op) {
-  case ADD:
-    return a + b;
-  case SUB:
-    return a - b;
-  case MUL:
-    return a * b;
-  case DIV:
-    return a / b;
-  }
-  return a + b;
-}
 
 //pg 238
 __device__ unsigned int warpIdx() {return threadIdx.x/WARP_SIZE;}
@@ -63,7 +47,7 @@ __device__ inline float blockScan(float val, enum BINOP op)
 
 	if(warpIdx() == 0)
 	{
-		float warpOp = (threadIdx.x<NUM_WARPS)?warpOps_s[threadIdx.x]:0.0f;
+		float warpOp = (threadIdx.x<NUM_WARPS)?warpOps_s[threadIdx.x]:identity(op);
 		warpOp = warpScan(warpOp, op);
 		if (threadIdx.x < NUM_WARPS)
 		{
@@ -113,7 +97,7 @@ __global__ void scan(float *dst, const float *src, unsigned int N,
 	threadOps[threadIdx.x] = threadOp;
 	__syncthreads();
 	//add/sub/etc. previous thread's partial ops
-	float prevPartialOp = (threadIdx.x>0)?threadOps[threadIdx.x-1]:0.0f;
+	float prevPartialOp = (threadIdx.x>0)?threadOps[threadIdx.x-1]:identity(op);
 	#pragma unroll
 	for (unsigned int c = 0; c < COARSE_FACTOR; ++c)
 	{
@@ -130,14 +114,16 @@ __global__ void scan(float *dst, const float *src, unsigned int N,
 
 int main(int argc, char** argv) {
   float *src, *dst;
-  size_t numElements = bench::arg_n(argc, argv, 1 << 24); //Num elements now taken as arg
+  //Num elements now taken as arg; --op and --input pick the operator and the
+  //repeated input values
+  Args args = parse_args(argc, argv, 1 << 24);
+  size_t numElements = args.n;
   size_t numBytes = sizeof(float) * numElements;
 
   src = (float *)malloc(numBytes);
   dst = (float *)malloc(numBytes);
 
-  for (size_t i = 0; i < numElements; ++i)
-    src[i] = 1.0f;
+  fill_input(src, numElements, args.input);
 
 	bench::print_device();//added from bench.cuh
   // calling cuda ker
@@ -152,19 +138,27 @@ int main(int argc, char** argv) {
 
     CUDA_CHECK(cudaMemcpy(src_d, src, numBytes, cudaMemcpyHostToDevice));
 	bench::Stats s = bench::time_gpu([&]{
-		scan<<<gd, threads>>>(dst_d, src_d, numElements, ADD);
+		scan<<<gd, threads>>>(dst_d, src_d, numElements, args.op);
 	});
+    // BENCH: credited work is the scan minimum (8N bytes, N-1 ops).
+    // Estimate per 2048-element block: 7 ops per thread for the register scan
+    // (7*256 = 1792), a 256-value blockScan (8 warp scans of 129 ops, a
+    // 129-op scan of warp totals, 7*32 = 224 adds = 1385), then 8 ops per
+    // thread to apply the earlier threads' total (2048) -> 5225 ops (~2.55N).
+    // Traffic is 8N bytes: src read once, dst written once.
+    const double blockOps = 7 * BLOCK_DIM + (8 * 129 + 129 + 224) +
+                            COARSE_FACTOR * BLOCK_DIM;
     bench::report("register-tiling", numElements, s,
 	bench::scan_min_bytes(numElements),
-	bench::scan_min_flops(numElements));
+	bench::scan_min_flops(numElements),
+	8.0 * numElements, blockOps * gd);
 
     CUDA_CHECK(cudaMemcpy(dst, dst_d, numBytes, cudaMemcpyDeviceToHost));
 	cudaFree(src_d);
 	cudaFree(dst_d);
   }
 
-  for (size_t i = 0; i < 4 && i < numElements; ++i)
-    printf("dst[%zu] == %f\n", i, dst[i]);
+  write_output(dst, numElements); // all N results, one line on stdout
 
   free(src);
   free(dst);

@@ -3,23 +3,23 @@
 // GPU usage (in a .cu file compiled with nvcc):
 //
 //   #include "../bench.cuh"
-//   size_t N = bench::arg_n(argc, argv, 1 << 24);     // ./scan.out 16777216 or
-//   ./scan.out 2^24
+//   // ./scan.out 16777216  or  ./scan.out 2^24
+//   size_t N = bench::arg_n(argc, argv, 1 << 24);
 //   ...
+//   // multi-kernel launches are fine too
 //   bench::Stats s = bench::time_gpu([&] {
-//     scan<<<gd, threads>>>(dst_d, src_d, N, ADD);    // multi-kernel launches
-//     are fine too
+//     scan<<<gd, threads>>>(dst_d, src_d, N, ADD);
 //   });
-//   bench::report("kogge-stone", N, s, bench::scan_min_bytes(N),
-//   bench::scan_min_flops(N),
-//                 est_bytes, est_flops);              // optional: the kernel's
-//                 own estimate
+//   // the last two arguments (the kernel's own estimate) are optional
+//   bench::report("kogge-stone", N, s,
+//                 bench::scan_min_bytes(N), bench::scan_min_flops(N),
+//                 est_bytes, est_flops);
 //
 // CPU usage (compiled as C++ with g++/clang++ or nvcc - not as C):
 //
 //   bench::Stats s = bench::time_cpu([&] { scan(dst, src, N, ADD); });
-//   bench::report("seq", N, s, bench::scan_min_bytes(N),
-//   bench::scan_min_flops(N));
+//   bench::report("seq", N, s,
+//                 bench::scan_min_bytes(N), bench::scan_min_flops(N));
 //
 // Output:
 //   - One human-readable line per report() on stdout.
@@ -28,7 +28,8 @@
 //       for k in $(seq 16 28); do BENCH_CSV=results.csv ./scan.out 2^$k; done
 //   - bytes/flops are the work credited to every scan (the minimum, so GB/s
 //     compares kernels fairly). est_bytes/est_flops are the kernel's own
-//     estimate of what it actually moves and computes; they default to
+//     estimate of what it actually moves and computes, worked out by hand
+//     from its loads, stores and binop calls (not measured); they default to
 //     bytes/flops when not given.
 //
 // Notes:

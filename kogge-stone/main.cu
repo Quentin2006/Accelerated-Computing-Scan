@@ -3,25 +3,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "../bench.cuh" // BENCH: timing/reporting header (bench::, CUDA_CHECK)
+#include "../common.cuh" // BINOP, binop, identity, CLI flags, output
 
 #define SEG_SIZE 256
-
-// NOTE: we can use any bianary operator
-enum BINOP { ADD, SUB, MUL, DIV };
-
-__device__ float binop(float a, float b, enum BINOP op) {
-  switch (op) {
-  case ADD:
-    return a + b;
-  case SUB:
-    return a - b;
-  case MUL:
-    return a * b;
-  case DIV:
-    return a / b;
-  }
-  return a + b;
-}
 
 // copied from the textbook, currently doesnt support many blocks
 __global__ void scan(float *dst, const float *src, unsigned int N,
@@ -31,7 +15,7 @@ __global__ void scan(float *dst, const float *src, unsigned int N,
   if (i < N) {
     buffer_s[threadIdx.x] = src[i];
   } else {
-    buffer_s[threadIdx.x] = 0.0f;
+    buffer_s[threadIdx.x] = identity(op);
   }
   for (unsigned int stride = 1; stride < blockDim.x; stride *= 2) {
     __syncthreads();
@@ -49,16 +33,17 @@ __global__ void scan(float *dst, const float *src, unsigned int N,
 
 int main(int argc, char **argv) { // BENCH: was main(void); argv carries N
   float *src, *dst;
-  // BENCH: N from the command line (./scan 2^24) instead of hardcoded 10
-  size_t numElements = bench::arg_n(argc, argv, 1 << 24);
+  // BENCH: N from the command line (./scan.out 2^24) instead of hardcoded 10.
+  // --op and --input pick the operator and the repeated input values.
+  Args args = parse_args(argc, argv, 1 << 24);
+  size_t numElements = args.n;
   // BENCH: size_t, an int byte count overflows past 2^29 elements
   size_t numBytes = sizeof(float) * numElements;
 
   src = (float *)malloc(numBytes);
   dst = (float *)malloc(numBytes);
 
-  for (size_t i = 0; i < numElements; ++i) // BENCH: size_t to match N
-    src[i] = 1.0f;
+  fill_input(src, numElements, args.input);
 
   bench::print_device(); // BENCH: one-line GPU summary (peaks, ridge point)
 
@@ -80,22 +65,24 @@ int main(int argc, char **argv) { // BENCH: was main(void); argv carries N
     // NOTE: each block scans only its own SEG_SIZE segment, so for
     // N > SEG_SIZE this times a segmented scan (dst restarts every 256).
     bench::Stats s = bench::time_gpu([&] {
-      scan<<<gd, threads>>>(dst_d, src_d, numElements, ADD);
+      scan<<<gd, threads>>>(dst_d, src_d, numElements, args.op);
     });
-    // BENCH: minimum scan work (8N bytes, N-1 ops). Actual ops are ~7N:
-    // log2(256) = 8 strides, minus the threads below each stride that idle.
+    // BENCH: credited work is the scan minimum (8N bytes, N-1 ops).
+    // Estimate per 256-element block: stride s has 256-s active threads, so
+    // sum over s=1,2,...,128 of (256-s) = 256*8 - 255 = 1793 ops (~7N total).
+    // Traffic is 8N bytes: src read once, dst written once.
+    const double blockOps = SEG_SIZE * std::log2((double)SEG_SIZE) - (SEG_SIZE - 1);
     bench::report("kogge-stone", numElements, s,
                   bench::scan_min_bytes(numElements),
-                  bench::scan_min_flops(numElements));
+                  bench::scan_min_flops(numElements),
+                  8.0 * numElements, blockOps * gd);
 
     CUDA_CHECK(cudaMemcpy(dst, dst_d, numBytes, cudaMemcpyDeviceToHost));
     cudaFree(src_d); // BENCH: added frees
     cudaFree(dst_d);
   }
 
-  // BENCH: spot-check the first few values instead of printing all N
-  for (size_t i = 0; i < 4 && i < numElements; ++i)
-    printf("dst[%zu] == %f\n", i, dst[i]);
+  write_output(dst, numElements); // all N results, one line on stdout
 
   free(src);
   free(dst);
