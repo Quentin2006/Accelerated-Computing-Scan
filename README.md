@@ -7,9 +7,9 @@ operators, command-line flags and output code through [`common.cuh`](common.cuh)
 | Directory | Kernel | Notes |
 |---|---|---|
 | `naive/` | One thread per output, loops over all earlier inputs | O(N²): keep N ≤ 2^20 |
-| `kogge-stone/` | Kogge-Stone in shared memory | Scans each 256-element block separately |
-| `kogge-stone-double-buffering/` | Kogge-Stone with two shared buffers | Scans each 256-element block separately |
-| `scan-scan-add/` | Warp-shuffle block scan → scan block totals → add offsets | Full scan of any N |
+| `kogge-stone/` | Kogge-Stone block scan in shared memory → scan block totals → add offsets | Full scan of any N; 256 elements per block |
+| `kogge-stone-double-buffering/` | Same, with two shared buffers (one `__syncthreads` per stride) | Full scan of any N; 256 elements per block |
+| `scan-scan-add/` | Warp-shuffle block scan → scan block totals → add offsets | Full scan of any N; 256 elements per block |
 | `register-tiling/` | 8 elements per thread in registers + block scan | Scans each 2048-element block separately; N must be a multiple of 2048 (2^11 and up), otherwise it reads and writes out of bounds |
 | `cub/` | `cub::DeviceScan::InclusiveScan` (PMPP 11.11) | Library baseline: the reference output and speed the others are compared against |
 
@@ -90,13 +90,14 @@ uv run roofline.py --range 2049 2050      # just N = 2049
 `--range START STOP [STEP]` takes the same arguments as Python's `range()` and is the only flag.
 For every run the script:
 
-1. runs `make clean` and `make` in every directory (in parallel) and deletes each `<dir>/results.csv`;
+1. runs `make clean` and `make` in every directory, one at a time, and deletes each `<dir>/results.csv`;
 2. for each operator and each N, runs `cub/scan.out`, then every other kernel, with
    `BENCH_CSV=results.csv`, so each run appends its timing to its own directory's CSV;
 3. compares each kernel's output (the last stdout line) with CUB's, to a relative tolerance of
    1e-6, and prints `PASS` or `FAIL` per kernel with the first wrong index of up to 5 failures.
 
-Naive stops at N = 2^16. Runs happen one at a time so they don't share the GPU and skew each
+Naive is left out of the list (it's O(N²), so it would take far too long at these sizes); run it
+by hand with a small N. Runs happen one at a time so they don't share the GPU and skew each
 other's timings. The exit status is 1 if any kernel fails.
 
 The inputs keep every result exact in float32: `add` uses `1,2,3`, `max`/`min` use `3,1,4,1,5,9`,
@@ -127,7 +128,7 @@ uvx ty check --python "$(uv python find --script roofline.py)" roofline.py
 ## Notes
 
 - **What's timed:** only the GPU work inside `bench::time_gpu(...)`, not `cudaMalloc` or `cudaMemcpy`.
-  For `scan-scan-add`, that's all three kernels together.
+  For the kernels that scan block totals and add offsets, that's all three kernels together.
 - **Work counts:** `bytes` and `flops` are the minimum work for any scan, so GB/s compares kernels fairly.
   `est_bytes` and `est_flops` are each kernel's own estimate, worked out by counting the global loads
   and stores (4 bytes each) and the `binop` calls in its code, so they show the extra work a kernel
