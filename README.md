@@ -10,7 +10,7 @@ operators, command-line flags and output code through [`common.cuh`](common.cuh)
 | `kogge-stone/` | Kogge-Stone block scan in shared memory → scan block totals → add offsets | Full scan of any N; 256 elements per block |
 | `kogge-stone-double-buffering/` | Same, with two shared buffers (one `__syncthreads` per stride) | Full scan of any N; 256 elements per block |
 | `scan-scan-add/` | Warp-shuffle block scan → scan block totals → add offsets | Full scan of any N; 256 elements per block |
-| `register-tiling/` | 8 elements per thread in registers + block scan | Scans each 2048-element block separately; N must be a multiple of 2048 (2^11 and up), otherwise it reads and writes out of bounds |
+| `register-tiling/` | 8 elements per thread in registers + block scan | Full scan of any N (bounds-checked) |
 | `cub/` | `cub::DeviceScan::InclusiveScan` (PMPP 11.11) | Library baseline: the reference output and speed the others are compared against |
 
 ## Benchmark one kernel
@@ -78,37 +78,84 @@ Delete the file first to start fresh.
 
 ## Build, check and benchmark everything
 
-[`roofline.py`](roofline.py) does the whole loop from the repo root. It is a
-[uv script](https://docs.astral.sh/uv/guides/scripts/), so uv installs its dependencies on first run.
+[`bench.py`](bench.py) does the timing loop from the repo root: build, run, check against
+CUB. It is a [uv script](https://docs.astral.sh/uv/guides/scripts/), so uv installs its
+dependencies (numpy) on first run. It does not draw graphs; it ends by printing
+`uv run graph.py` as the next step.
 
 ```bash
-uv run roofline.py                        # default: N in range(1, 1100000, 157143)
-uv run roofline.py --range 1 5000 7       # N in range(1, 5000, 7)
-uv run roofline.py --range 2049 2050      # just N = 2049
+uv run bench.py                        # default: 40 sizes from 1 to 2^24 (about 10 minutes)
+uv run bench.py --points 8 --max 65536 # fewer, smaller sizes
+uv run bench.py --range 1 5000 7       # N in range(1, 5000, 7)
+uv run bench.py --range 2049 2050      # just N = 2049
 ```
 
-`--range START STOP [STEP]` takes the same arguments as Python's `range()` and is the only flag.
+Only `add` is timed. By default it sweeps `--points 40` sizes, log-spaced from 1 to
+`--max 16777216` (2^24), and rounds each one to an odd number so runs land in the middle of a
+block, where a kernel that only scans whole blocks goes visibly wrong. Rounding can make
+neighbouring sizes collide at the small end; those move up by 2 instead, so the list stays
+distinct and increasing, and the largest odd size at or below `--max` is always included.
+Each `add` run appends its timing to its directory's `results.csv` (via `BENCH_CSV`) and is
+also checked against CUB. The other operators are never timed: `mul`, `max` and `min` are
+checked against CUB with no CSV row, at sizes that hit every edge a block scan has — 1, 255,
+256, 257, 2047, 2048, 2049, 65535, 1048575 — with the inputs that keep float32 exact (`mul`
+uses `2,-1,0.5`, whose product over any power-of-two block is −2, so a kernel that restarts
+the scan at a block boundary gets a visibly wrong answer; `max`/`min` use `3,1,4,1,5,9`).
+
 For every run the script:
 
 1. runs `make clean` and `make` in every directory, one at a time, and deletes each `<dir>/results.csv`;
-2. for each operator and each N, runs `cub/scan.out`, then every other kernel, with
-   `BENCH_CSV=results.csv`, so each run appends its timing to its own directory's CSV;
+2. for each timed N, runs `cub/scan.out`, then every other kernel, with `BENCH_CSV=results.csv`,
+   so each run appends its timing to its own directory's CSV; the correctness-only runs use
+   the same commands without `BENCH_CSV`;
 3. compares each kernel's output (the last stdout line) with CUB's, to a relative tolerance of
    1e-6, and prints `PASS` or `FAIL` per kernel with the first wrong index of up to 5 failures.
 
+The exit status is 1 if any kernel failed.
+
 Naive is left out of the list (it's O(N²), so it would take far too long at these sizes); run it
 by hand with a small N. Runs happen one at a time so they don't share the GPU and skew each
-other's timings. The exit status is 1 if any kernel fails.
+other's timings.
 
-The inputs keep every result exact in float32: `add` uses `1,2,3`, `max`/`min` use `3,1,4,1,5,9`,
-and `mul` uses `2,-1,0.5`, a pattern whose product over any power-of-two block is −2, so a kernel
-that restarts the scan at a block boundary gets a visibly wrong answer.
+## Graphs
 
-To lint and type-check the script:
+[`graph.py`](graph.py) reads the CSVs `bench.py` wrote and draws the graphs. It needs no GPU
+and no `nvcc`, so it runs wherever the CSVs are committed.
+
+```bash
+uv run graph.py   # the 15 PNGs; exit 1 if there is nothing to graph
+```
+
+Each figure's title names the GPU. There are 15 timing PNGs: five in `graphs/` that put every
+kernel on one panel, and a `runtime.png` and `bandwidth.png` in each `<kernel>/` directory next
+to the implementation.
+
+The colour and shape of a kernel are the same in every figure: CUB blue circle, Kogge-Stone
+orange square, Kogge-Stone-double-buffering green triangle, scan-scan-add red diamond,
+register-tiling purple cross.
+
+| File | What it shows, and how to read it |
+|---|---|
+| `graphs/runtime.png` | Median time against N (N > 1), one line per kernel, with asymmetric error bars: down to the fastest run, up by one standard deviation. Parallel lines mean the kernels scale alike; a jump means a kernel's extra passes start to cost. |
+| `graphs/bandwidth.png` | Useful GB/s — the minimum 8N bytes any scan must move, over the median time — as a percentage of the GPU's peak DRAM bandwidth, on a fixed 0–100 % axis. Counting only the minimum work keeps kernels comparable no matter how much extra traffic they create; the line that tops out highest uses the GPU's memory system best. |
+| `graphs/per-element.png` | Median time per element, in ns, against N. The floor is the time to move one float in and one float out; anything above it is per-element overhead (extra passes, block scans, barriers). |
+| `graphs/vs-cub.png` | Each kernel's median time divided by CUB's at the same N. Below the dashed 1-line means faster than CUB; the shape of the curve shows where a kernel wins or loses. |
+| `graphs/roofline.png` | The roofline: x is the minimum ops per estimated byte (`flops / est_bytes`), y is useful GFLOP/s, the dashed roof is the machine's `min(peak GFLOP/s, peak GB/s × AI)`, colour is N (one shared log scale, ticked at the smallest, middle and largest N on the colourbar) and marker shape is the kernel. The x axis is fixed at 0.04–0.2 FLOP/B, where every kernel's intensity sits, and y is zoomed to the data with the roof over that window in view. The legend states both peaks and the ridge point, which is far to the right of the plotted window. |
+| `<kernel>/runtime.png` | That kernel's median time against N (N > 1) alone. All five share one y-range, so the kernels compare by flipping between the figures. |
+| `<kernel>/bandwidth.png` | That kernel's useful bandwidth as % of peak, on the same fixed 0–100 % axis as `graphs/bandwidth.png`. |
+
+Every N in the CSV except N = 1 is plotted (a single element times launch overhead, not
+throughput). Log axes get plain-number tick labels, and minor ticks stay unlabelled.
+
+The graphs are written from `<kernel>/results.csv`, so `uv run graph.py` redraws them from
+whatever the last benchmark run left behind. `graphs/` is created if it doesn't exist.
+
+To lint and type-check the scripts:
 
 ```bash
 uvx ruff check .
-uvx ty check --python "$(uv python find --script roofline.py)" roofline.py
+uvx ty check --python "$(uv python find --script bench.py)" bench.py
+uvx ty check --python "$(uv python find --script graph.py)" graph.py
 ```
 
 ## CSV columns
